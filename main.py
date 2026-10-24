@@ -1,4 +1,4 @@
-"""🐄 Bovine Genomics Pipeline v11.7 — Ultimate Edition (ML, Haplotypes, LiftOver, 3D)"""
+"""🐄 Bovine Genomics Pipeline v11.8 — Édition Définitive (Stabilité, VEP, Alignement, ML, 3D)"""
 import gzip, io, os, warnings, zipfile, subprocess, tempfile, shutil
 from collections import Counter
 from io import BytesIO
@@ -21,10 +21,11 @@ import requests
 import time
 import json
 import streamlit.components.v1 as components
+from Bio import Align
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
-st.set_page_config(page_title="🐄 Bovine Pipeline v11.7", page_icon="🐄", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="🐄 Bovine Pipeline v11.8", page_icon="🐄", layout="wide", initial_sidebar_state="expanded")
 
 ARS = {"1":158_534_110,"2":136_231_102,"3":121_005_158,"4":120_000_166,"5":120_089_699,"6":117_806_340,"7":110_682_743,"8":113_384_748,"9":105_708_134,"10":103_308_737,"11":107_310_763,"12":91_163_125,"13":84_246_514,"14":84_648_346,"15":85_207_080,"16":81_726_628,"17":75_176_999,"18":66_059_976,"19":64_089_169,"20":72_042_983,"21":71_599_096,"22":61_416_492,"23":52_531_573,"24":62_384_193,"25":42_959_610,"26":51_680_158,"27":46_772_073,"28":46_333_854,"29":51_319_414}
 AUTO = [str(i) for i in range(1,30)]
@@ -54,30 +55,13 @@ GROUPES_DEFAULT = {
         "FORT_PERSILLE_GRAS": ["NAR", "PTP", "PRS", "LJR"], 
         "FAIBLE_PERSILLE_MAIGRE": ["AND", "EBG", "ELN", "NKA", "PSH", "SHO"]
     },
-    "Développement musculaire": {
-        "FORTE_MUSCULATURE": ["LJR", "SHO", "YBS"], 
-        "MUSCULATURE_NORMALE": ["NAR", "PTP", "PRS", "AND", "EBG", "ELN"]
-    },
     "Adaptation climatique": {
         "TROPICAL_CHAUD": ["AND", "EBG", "ELN", "PTP", "PRS", "NKA", "PSH"],
         "TEMPERÉ_FROID": ["LJR", "SHO", "YBS", "NAR", "NBD", "EZP", "FGN"]
     },
-    "Type de poil (Régulation thermique)": {
-        "POIL_LISSE_SLICK": ["AND", "EBG", "ELN", "PTP", "PRS", "NKA", "PSH"], 
-        "POIL_LONG_NORMAL": ["LJR", "SHO", "YBS", "NAR", "NBD", "EZP", "FGN"]
-    },
-    "Trypanotolérance (Maladie du sommeil)": {
-        "RESISTANT_TRYPS": ["AND", "EBG", "ELN", "NKA", "PSH"], 
-        "SENSIBLE_TRYPS": ["LJR", "SHO", "YBS", "NAR", "NBD", "EZP", "FGN"]
-    },
     "Présence de cornes": {
         "CORNU": ["AND", "ELN", "PTP", "PRS", "NKA", "PSH"],
         "SANS_CORNES_POLLED": ["SHO", "YBS", "LJR", "NAR", "NBD"]
-    },
-    "Origine géographique": {
-        "EUROPE": ["LJR", "SHO", "YBS", "NAR", "NBD", "EZP", "FGN"],
-        "AFRIQUE": ["AND", "EBG", "ELN", "NKA", "PSH"],
-        "ASIE": ["PTP", "PRS"]
     }
 }
 
@@ -129,16 +113,6 @@ def _rt(raw):
     if len(raw)>=2 and raw[:2]==b"\x1f\x8b": return gzip.decompress(raw).decode("utf-8",errors="replace")
     return raw.decode("utf-8",errors="replace")
 
-def sample_fid_iid(s, fp=2):
-    n=str(s).strip()
-    for e in (".CEL",".cel",".TXT",".txt",".gz",".GZ"):
-        if n.endswith(e): n=n[:-len(e)]
-    n=n.replace("(","_").replace(")","").replace("[","_").replace("]","").replace(" ","_").replace("/","_")
-    while "__" in n: n=n.replace("__","_")
-    p=n.strip("_").split("_"); return ("_".join(p[:fp]) if len(p)>=fp else p[0]), n
-def _ca(a):
-    a=str(a).strip() if a is not None else "0"; return "0" if a in ("",".","-","NA","nan","None","0","00") else a
-
 def parse_axiom(raw_bytes, fn=""):
     raw = gzip.decompress(raw_bytes) if fn.endswith(".gz") or raw_bytes[:2]==b"\x1f\x8b" else raw_bytes
     lines=[l.rstrip("\r\n") for l in raw.decode("utf-8",errors="replace").splitlines() if l.strip()]
@@ -151,7 +125,7 @@ def parse_axiom(raw_bytes, fn=""):
         samples.append(parts[0].strip()); alleles=[]
         for cell in parts[1:]:
             tk=cell.split()
-            if len(tk)==2: alleles.append((_ca(tk[0]),_ca(tk[1])))
+            if len(tk)==2: alleles.append((tk[0],tk[1]))
             elif len(tk)==1 and len(tk[0])==2 and all(ch in "ACGT0" for ch in tk[0]): alleles.append((tk[0][0],tk[0][1]))
             else: alleles.append(("0","0"))
         gtypes.append(alleles)
@@ -183,12 +157,11 @@ def parse_ped(b, n_map):
         p=line.split()
         if len(p)>=ec: fids.append(p[0]); iids.append(p[1]); rows.append(p[6:6+2*n])
     if not iids: raise ValueError("Aucun individu")
-    
     ac=[Counter() for _ in range(n)]
     for r in rows:
         for j in range(n):
             if r[2*j]!="0" and r[2*j+1]!="0": ac[j].update([r[2*j],r[2*j+1]])
-            
+    
     alleles_A1, alleles_A2 = [], []
     for c in ac:
         common = c.most_common(2)
@@ -680,9 +653,21 @@ def combine_pvalues_fisher(res_race, res_group):
 # ============================================================
 _SEVERITY = {"HIGH": 4, "MODERATE": 3, "LOW": 2, "MODIFIER": 1}
 
+def traduire_consequence_vep(consequence_str):
+    consequence_str = str(consequence_str).lower()
+    if "missense" in consequence_str: return "🔴 Exon (Faux-sens - Protéine modifiée)"
+    elif "synonymous" in consequence_str: return "🟡 Exon (Silencieuse - Protéine inchangée)"
+    elif "stop_gained" in consequence_str or "frameshift" in consequence_str: return "⛔ Exon (Non-sens - Protéine tronquée)"
+    elif "splice" in consequence_str: return "⚠️ Jonction Exon/Intron"
+    elif "intron" in consequence_str: return "🟢 Intron (Régulation)"
+    elif "3_prime_utr" in consequence_str: return "🔵 Région 3'UTR"
+    elif "5_prime_utr" in consequence_str: return "🔵 Région 5'UTR"
+    elif "upstream" in consequence_str: return "🟣 Régulateur (Promoteur amont)"
+    elif "downstream" in consequence_str: return "🟣 Régulateur (Aval)"
+    else: return "⚪ Intergénique"
+
 def run_vep_api(snp_list, species="bos_taurus", batch=200):
     if not snp_list: return pd.DataFrame()
-    # AJOUT DE regulatory=1 POUR LES RÉGIONS RÉGULATRICES (ENCODE)
     url = f"https://rest.ensembl.org/vep/{species}/region?regulatory=1"
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
     results = []
@@ -698,8 +683,7 @@ def run_vep_api(snp_list, species="bos_taurus", batch=200):
                     if "transcript_consequences" in item and item["transcript_consequences"]:
                         cons = sorted(item["transcript_consequences"], key=lambda x: _SEVERITY.get(x.get("impact", "MODIFIER"), 0), reverse=True)[0]
                         results.append({
-                            "SNP": snp_id,
-                            "GENE": cons.get("gene_symbol", "N/A"),
+                            "SNP": snp_id, "GENE": cons.get("gene_symbol", "N/A"),
                             "CONSEQUENCE": ", ".join(cons.get("consequence_terms", ["N/A"])),
                             "IMPACT": cons.get("impact", "N/A"),
                             "AMINO_ACID_CHANGE": cons.get("amino_acids", "N/A"),
@@ -707,7 +691,6 @@ def run_vep_api(snp_list, species="bos_taurus", batch=200):
                             "POLYPHEN": cons.get("polyphen_prediction", "N/A")
                         })
                     elif "regulatory_feature_consequences" in item and item["regulatory_feature_consequences"]:
-                        # Annotation régulatrice (ENCODE)
                         cons = item["regulatory_feature_consequences"][0]
                         results.append({
                             "SNP": snp_id, "GENE": "Région régulatrice",
@@ -720,8 +703,10 @@ def run_vep_api(snp_list, species="bos_taurus", batch=200):
                             "CONSEQUENCE": "N/A", "IMPACT": "MODIFIER",
                             "AMINO_ACID_CHANGE": "N/A", "SIFT": "N/A", "POLYPHEN": "N/A"
                         })
+            else:
+                st.warning(f"⚠️ Erreur VEP API (batch {i//batch+1}) : Code {response.status_code}")
         except Exception as e:
-            pass
+            st.warning(f"⚠️ Erreur réseau VEP (batch {i//batch+1}) : {e}")
         time.sleep(1.0)
     return pd.DataFrame(results)
 
@@ -797,14 +782,41 @@ def render_3d_structure(pdb_data, style="cartoon", color_scheme="spectrum", high
     """
     components.html(html_code, height=520)
 
-def lift_over(chrom, bp, species_from="bos_taurus", species_to="human"):
-    """Utilise l'API Ensembl pour convertir une coordonnée génomique."""
+def fetch_ensembl_sequence(chrom, start, end, species="bos_taurus"):
+    url = f"https://rest.ensembl.org/sequence/region/{species}/{chrom}:{start}..{end}:1?content-type=text/plain"
+    try:
+        r = requests.get(url, timeout=30)
+        if r.status_code == 200: return r.text.upper()
+    except: pass
+    return None
+
+def align_and_highlight(seq_ref, seq_fast, seq_slow):
+    aligner = Align.PairwiseAligner()
+    aligner.mode = 'global'
+    alignments_fast = aligner.align(seq_ref, seq_fast)
+    alignments_slow = aligner.align(seq_ref, seq_slow)
+    best_fast = alignments_fast[0]; best_slow = alignments_slow[0]
+    html = "<div style='font-family: monospace; font-size: 16px; line-height: 1.5;'>"
+    def format_seq(aln, name, color):
+        ref_aligned, seq_aligned = aln[0], aln[1]
+        html_seq = f"<b>{name:10}</b> | "
+        for r, s in zip(ref_aligned, seq_aligned):
+            if r == '-' or s == '-': html_seq += f"<span style='color: orange; font-weight: bold;'>{s}</span>"
+            elif r != s: html_seq += f"<span style='color: red; font-weight: bold;'>{s}</span>"
+            else: html_seq += f"<span style='color: {color};'>{s}</span>"
+        return html_seq + "<br>"
+    html += format_seq(best_fast, "Rapide", "green")
+    html += f"<b>{'Référence':10}</b> | " + "".join([f"<span style='color: grey;'>{r}</span>" for r in best_fast[0]]) + "<br>"
+    html += format_seq(best_slow, "Lente", "blue")
+    html += "</div>"
+    return html
+
+def lift_over(chrom, bp, species_to="human"):
     url = f"https://rest.ensembl.org/map/{species_to}/GRCh38/{chrom}:{bp}-{bp}:1?content-type=application/json"
     try:
         r = requests.get(url, timeout=30)
         if r.status_code == 200:
-            data = r.json()
-            mappings = data.get("mappings", [])
+            data = r.json(); mappings = data.get("mappings", [])
             if mappings:
                 mapped = mappings[0].get("mapped", {})
                 return mapped.get("seq_region_name"), mapped.get("start")
@@ -812,7 +824,7 @@ def lift_over(chrom, bp, species_from="bos_taurus", species_to="human"):
     return None, None
 
 # ============================================================
-# AUTRES FONCTIONS (Annotation, GSEA, STRING)
+# AUTRES (Enrichissement, STRING)
 # ============================================================
 def run_enrichment(gene_list, gene_sets=None, organism="Human", outdir=None):
     try:
@@ -844,16 +856,13 @@ def query_string_network(genes, species=9913, required_score=400):
         edges.columns = ["SOURCE", "TARGET", "SCORE"]
         nodes = pd.DataFrame({"ID": sorted(set(edges["SOURCE"]).union(set(edges["TARGET"])))})
         return edges, nodes
-    except Exception as e:
-        return pd.DataFrame(), pd.DataFrame()
+    except: return pd.DataFrame(), pd.DataFrame()
 
 def plot_string_network(edges, nodes):
     if edges is None or edges.empty: return None
-    try:
-        import networkx as nx
+    try: import networkx as nx
     except ImportError:
-        st.error("⚠️ Le module `networkx` n'est pas installé.")
-        return None
+        st.error("⚠️ Le module `networkx` n'est pas installé."); return None
     G = nx.Graph()
     for _, r in edges.iterrows(): G.add_edge(r["SOURCE"], r["TARGET"], weight=float(r["SCORE"]))
     pos = nx.spring_layout(G, seed=42, k=0.6)
@@ -1060,13 +1069,11 @@ def plot_gene_track(si, gff, wk=50):
 # ============================================================
 # INTERFACE STREAMLIT
 # ============================================================
-_KEYS = ["gt","ind_df","snp_df","gt_filt","ind_filt","snp_filt","gt_pre","ind_pre","snp_pre","gt_pruned","snp_pruned","qc_stats","pca_s","pca_v","mds_c","king_K","fst","fst_M","fst_pops","admix_Q","admix_K","cv_res","ld_df","roh_df","froh","ne_dict","reyn_D","reyn_pops","pheno_df","gwas_res","gwas_pheno","lambda_gc","gebv_df","gblup_stats","ann_df","_plink","_vcf","mapping_df","fst_snp_df","win_fst","taj_df","taj_race","css_df","pair_res","pair_res_race","pair_res_group","pair_name_race","pair_name_group","nj_result","nj_mid","sel_gff","sel_ann","sel_ann_race","sel_ann_group","scan_df",
-         "vep_res", "ncbi_gene_res", "ncbi_snp_res", "lift_res"]
-
-_DERIVED = [k for k in _KEYS if k not in ("gt","ind_df","snp_df")]
+_KEYS = ["gt","ind_df","snp_df","gt_filt","ind_filt","snp_filt","gt_pre","ind_pre","snp_pre","gt_pruned","snp_pruned","qc_stats","pca_s","pca_v","mds_c","king_K","fst","fst_M","fst_pops","admix_Q","admix_K","cv_res","ld_df","roh_df","froh","ne_dict","reyn_D","reyn_pops","pheno_df","gwas_res","gwas_pheno","lambda_gc","gebv_df","gblup_stats","ann_df","_plink","_vcf","mapping_df","fst_snp_df","win_fst","taj_df","taj_race","css_df","pair_res","pair_res_race","pair_res_group","pair_name_race","pair_name_group","nj_result","nj_mid","sel_gff","sel_ann","sel_ann_race","sel_ann_group","scan_df", "vep_res", "ncbi_gene_res", "ncbi_snp_res", "lift_res"]
 
 def reset_derived():
-    for k in _DERIVED: st.session_state[k] = None
+    for k in _KEYS:
+        if k not in ("gt","ind_df","snp_df"): st.session_state[k] = None
 
 def init_state():
     for k in _KEYS:
@@ -1074,8 +1081,8 @@ def init_state():
 
 def main():
     init_state()
-    st.title("🐄 Bovine Genomics Pipeline v11.7 Ultimate")
-    st.caption("ML, Blocs Haplotypes, LiftOver, VEP régulateur & Structure 3D")
+    st.title("🐄 Bovine Genomics Pipeline v11.8")
+    st.caption("Stabilité, VEP régulateur, Alignement, 3D, ML & Haplotypes")
 
     with st.sidebar:
         st.header("📁 Données")
@@ -1122,11 +1129,8 @@ def main():
     tabs = st.tabs([
         "🧹 QC", "✂️ LD", "🧬 Structure", "🎨 Admixture", "📈 Démographie", 
         "🔍 Sélection", "🧪 GWAS Classique", "🎯 Post-GWAS", "📈 GBLUP", 
-        "🧬 Annotation", "🧬 VEP & NCBI", "🧬 Structure 3D", "📤 Export", 
-        "🔬 Méta-Analyse", 
-        "🧠 Prédiction ML", 
-        "🧬 Blocs Haplotypes", 
-        "🌍 LiftOver"
+        "🧬 Annotation", "🧬 VEP & NCBI", "🧬 Structure 3D", "🧬 Alignement Séquences", 
+        "📤 Export", "🔬 Méta-Analyse", "🧠 Prédiction ML", "🧬 Blocs Haplotypes", "🌍 LiftOver"
     ])
 
     # ═══════════════ QC ═══════════════
@@ -1421,7 +1425,6 @@ def main():
     # ═══════════════ ANNOTATION FONCTIONNELLE (VEP/NCBI) ═══════════════
     with tabs[10]:
         st.subheader("🧬 Annotation Fonctionnelle Avancée (VEP & NCBI)")
-        
         st.markdown("### 1️⃣ Sélectionnez les SNPs à analyser")
         sources_snp = []
         if st.session_state.get("pair_res_group") is not None: sources_snp.append("Top SNPs Groupe")
@@ -1431,32 +1434,23 @@ def main():
         sources_snp.append("Saisie manuelle")
         
         src_snp = st.selectbox("Source des SNPs", sources_snp, key="vep_src")
-        
         snps_to_analyze = []
-        if src_snp == "Top SNPs Groupe":
-            snps_to_analyze = st.session_state.pair_res_group["SNP"].head(20).tolist()
-        elif src_snp == "Top SNPs Race":
-            snps_to_analyze = st.session_state.pair_res_race["SNP"].head(20).tolist()
-        elif src_snp == "Top SNPs GWAS Classique":
-            snps_to_analyze = st.session_state.gwas_res.sort_values("P")["SNP"].head(20).tolist()
-        elif src_snp == "Top SNPs FST":
-            snps_to_analyze = st.session_state.win_fst["TOP_SNP"].head(20).tolist()
+        if src_snp == "Top SNPs Groupe": snps_to_analyze = st.session_state.pair_res_group["SNP"].head(20).tolist()
+        elif src_snp == "Top SNPs Race": snps_to_analyze = st.session_state.pair_res_race["SNP"].head(20).tolist()
+        elif src_snp == "Top SNPs GWAS Classique": snps_to_analyze = st.session_state.gwas_res.sort_values("P")["SNP"].head(20).tolist()
+        elif src_snp == "Top SNPs FST": snps_to_analyze = st.session_state.win_fst["TOP_SNP"].head(20).tolist()
         else:
             txt = st.text_area("Liste de SNPs (1/ligne, ex: rs123 ou AX-...)", key="vep_manual")
             if txt.strip(): snps_to_analyze = [s.strip() for s in txt.splitlines() if s.strip()]
 
         if snps_to_analyze:
             st.info(f"📊 {len(snps_to_analyze)} SNPs sélectionnés pour analyse.")
-            
             st.markdown("### 2️⃣ Impact fonctionnel des variants (Ensembl VEP)")
-            st.caption("Détermine si le SNP est dans un exon, un intron, s'il change un acide aminé (faux-sens) ou non (synonyme).")
-            
             snp_full = st.session_state.snp_pruned if st.session_state.snp_pruned is not None else st.session_state.snp_filt
             vep_input = []
             if snp_full is not None:
                 for s in snps_to_analyze:
-                    if str(s).startswith("rs"):
-                        vep_input.append(s)
+                    if str(s).startswith("rs"): vep_input.append(s)
                     else:
                         row = snp_full[snp_full["SNP"].astype(str) == str(s)]
                         if not row.empty:
@@ -1467,22 +1461,21 @@ def main():
                                 vep_input.append(f"{r['CHR']}:{int(r['BP'])}-{int(r['BP'])}")
                             else:
                                 vep_input.append(f"{r['CHR']}:{int(r['BP'])}:{ref}:{alt}")
-                        else:
-                            vep_input.append(s)
+                        else: vep_input.append(s)
 
             if st.button("🔬 Lancer l'analyse VEP", type="primary", key="run_vep_btn"):
                 with st.spinner("Interrogation de l'API Ensembl VEP..."):
                     vep_res = run_vep_api(vep_input)
-                    st.session_state.vep_res = vep_res
-                    if not vep_res.empty: st.success("✅ Analyse VEP terminée.")
+                    if not vep_res.empty:
+                        vep_res["LOCALISATION"] = vep_res["CONSEQUENCE"].apply(traduire_consequence_vep)
+                        st.session_state.vep_res = vep_res
+                        st.success("✅ Analyse VEP terminée.")
             
             if st.session_state.get("vep_res") is not None and not st.session_state.vep_res.empty:
-                st.dataframe(st.session_state.vep_res, use_container_width=True)
+                st.dataframe(st.session_state.vep_res[["SNP", "GENE", "LOCALISATION", "CONSEQUENCE", "IMPACT", "AMINO_ACID_CHANGE"]], use_container_width=True)
                 st.download_button("⬇ Export VEP CSV", st.session_state.vep_res.to_csv(index=False).encode(), "vep_results.csv", "text/csv")
 
             st.markdown("### 3️⃣ Fonctions officielles des gènes (NCBI Gene)")
-            st.caption("Récupère la description officielle et le résumé fonctionnel de chaque gène via l'API NCBI.")
-            
             genes_to_fetch = []
             if st.session_state.get("vep_res") is not None and not st.session_state.vep_res.empty and "GENE" in st.session_state.vep_res.columns:
                 genes_to_fetch = st.session_state.vep_res["GENE"].dropna().unique().tolist()
@@ -1491,8 +1484,7 @@ def main():
                 
             genes_to_fetch = [g for g in genes_to_fetch if str(g).strip() not in ("N/A", "Intergenic/Non-codant", "Unknown", "nan", "")]
                 
-            if not genes_to_fetch:
-                st.warning("⚠️ Aucun gène valide disponible. Lancez d'abord l'annotation ou VEP.")
+            if not genes_to_fetch: st.warning("⚠️ Aucun gène valide disponible. Lancez d'abord l'annotation ou VEP.")
             else:
                 st.info(f"🧬 {len(genes_to_fetch)} gènes uniques valides identifiés : {', '.join(genes_to_fetch[:5])}...")
                 if st.button("🏛️ Récupérer les infos NCBI", type="primary", key="run_ncbi_btn"):
@@ -1505,27 +1497,9 @@ def main():
                     st.dataframe(st.session_state.ncbi_gene_res, use_container_width=True)
                     st.download_button("⬇ Export NCBI Gene CSV", st.session_state.ncbi_gene_res.to_csv(index=False).encode(), "ncbi_gene_info.csv", "text/csv")
 
-            st.markdown("### 4️⃣ Validation des variants (NCBI dbSNP)")
-            rs_snps = [s for s in snps_to_analyze if str(s).lower().startswith("rs")]
-            
-            if not rs_snps:
-                st.info("💡 **Note :** Vos SNPs (ex: AX-...) ne sont pas des identifiants 'rs'. L'API dbSNP n'accepte que les identifiants `rs` pour la validation directe. Les résultats VEP et NCBI Gene ci-dessus fournissent déjà l'annotation fonctionnelle pour vos variants.")
-            else:
-                if st.button("🔎 Vérifier les rsID sur dbSNP", key="run_dbsnp_btn"):
-                    with st.spinner("Interrogation de dbSNP..."):
-                        dbsnp_res = fetch_ncbi_dbsnp_info(rs_snps[:20])
-                        st.session_state.ncbi_snp_res = dbsnp_res
-                    if not dbsnp_res.empty: st.success("✅ Validation dbSNP terminée.")
-            
-            if st.session_state.get("ncbi_snp_res") is not None and not st.session_state.ncbi_snp_res.empty:
-                st.dataframe(st.session_state.ncbi_snp_res, use_container_width=True)
-                st.download_button("⬇ Export dbSNP CSV", st.session_state.ncbi_snp_res.to_csv(index=False).encode(), "dbsnp_info.csv", "text/csv")
-
-    # ═══════════════ VISUALISATION 3D (AlphaFold) ═══════════════
+    # ═══════════════ VISUALISATION 3D ═══════════════
     with tabs[11]:
         st.subheader("🧬 Visualisation 3D des Protéines (AlphaFold)")
-        st.markdown("Explorez la structure tridimensionnelle des protéines codées par vos gènes candidats.")
-        
         genes_to_structure = []
         if st.session_state.get("vep_res") is not None and not st.session_state.vep_res.empty and "GENE" in st.session_state.vep_res.columns:
             genes_to_structure = [g for g in st.session_state.vep_res["GENE"].unique() if str(g).strip() not in ("N/A", "Intergenic/Non-codant", "Unknown", "nan", "")]
@@ -1533,15 +1507,13 @@ def main():
             genes_to_structure = [g for g in st.session_state.sel_ann["GENE"].unique() if str(g).strip() not in ("N/A", "Intergenic/Non-codant", "Unknown", "nan", "")]
         elif st.session_state.get("ann_df") is not None and not st.session_state.ann_df.empty and "GENE" in st.session_state.ann_df.columns:
             genes_to_structure = [g for g in st.session_state.ann_df["GENE"].unique() if str(g).strip() not in ("N/A", "Intergenic/Non-codant", "Unknown", "nan", "")]
-        else:
-            st.warning("⚠️ Veuillez d'abord lancer l'annotation VEP ou l'annotation des gènes pour obtenir une liste de gènes.")
+        else: st.warning("⚠️ Veuillez d'abord lancer l'annotation VEP ou l'annotation des gènes pour obtenir une liste de gènes.")
             
         if genes_to_structure:
             c1, c2, c3 = st.columns(3)
             target_gene = c1.selectbox("Sélectionnez le gène", genes_to_structure, key="gene_3d")
             view_style = c2.selectbox("Style de représentation", ["cartoon", "stick", "sphere", "line"], key="style_3d")
             color_scheme = c3.selectbox("Coloration", ["spectrum", "chainHetatm", "ssPyMol"], key="color_3d")
-            
             highlight_res = st.text_input("Surligner un acide aminé spécifique (facultatif, ex: 123)", key="hl_res")
             
             if st.button("🔬 Charger la structure 3D", type="primary", key="btn_load_3d"):
@@ -1553,13 +1525,38 @@ def main():
                         if pdb_data:
                             st.info("💡 Vous pouvez interagir avec la molécule (cliquer-glisser pour tourner, molette pour zoomer).")
                             render_3d_structure(pdb_data, style=view_style, color_scheme=color_scheme, highlight_res=highlight_res)
-                        else:
-                            st.error("❌ Structure AlphaFold introuvable pour cette protéine.")
-                    else:
-                        st.error("❌ Gène non trouvé dans UniProt pour ce taxon.")
+                        else: st.error("❌ Structure AlphaFold introuvable pour cette protéine.")
+                    else: st.error("❌ Gène non trouvé dans UniProt pour ce taxon.")
+
+    # ═══════════════ ALIGNEMENT DE SÉQUENCES ═══════════════
+    with tabs[12]:
+        st.subheader("🧬 Alignement de Séquences (Rapide vs Lente)")
+        if st.session_state.get("pair_res_race") is not None or st.session_state.get("gwas_res") is not None:
+            if st.session_state.get("pair_res_race") is not None: snps_to_align = st.session_state.pair_res_race.head(5)
+            else: snps_to_align = st.session_state.gwas_res.head(5)
+                
+            snp_to_choose = st.selectbox("Choisissez le SNP à visualiser :", snps_to_align["SNP"].tolist())
+            
+            if st.button("🔍 Générer l'alignement", type="primary"):
+                snp_info = snps_to_align[snps_to_align["SNP"] == snp_to_choose].iloc[0]
+                chrom = str(snp_info["CHR"]).replace("chr", ""); bp = int(snp_info["BP"])
+                start = max(1, bp - 25); end = bp + 25
+                
+                with st.spinner(f"Téléchargement de la séquence sur le chromosome {chrom}..."):
+                    seq_ref = fetch_ensembl_sequence(chrom, start, end)
+                    if seq_ref:
+                        snp_pos = bp - start
+                        seq_fast = list(seq_ref); seq_slow = list(seq_ref)
+                        alleles = ["A", "C", "G", "T"]; ref_base = seq_ref[snp_pos]; alt_base = "A" if ref_base != "A" else "G"
+                        seq_fast[snp_pos] = alt_base; seq_slow[snp_pos] = ref_base
+                        alignment_html = align_and_highlight(seq_ref, "".join(seq_fast), "".join(seq_slow))
+                        st.markdown(alignment_html, unsafe_allow_html=True)
+                        st.info(f"💡 Le SNP **{snp_to_choose}** se situe au centre. Les bases en **rouge** indiquent une mutation.")
+                    else: st.error("❌ Impossible de récupérer la séquence depuis Ensembl. Vérifiez le chromosome.")
+        else: st.warning("⚠️ Lancez d'abord un GWAS ou une analyse Groupe vs Groupe pour identifier des SNPs.")
 
     # ═══════════════ Export ═══════════════
-    with tabs[12]:
+    with tabs[13]:
         if st.session_state.gt_filt is not None:
             if st.button("📦 PLINK",key="pl_btn"):
                 try:
@@ -1577,7 +1574,7 @@ def main():
                 except Exception as e: st.error(f"❌ {e}")
 
     # ═══════════════ MÉTA-ANALYSE & ENRICHISSEMENT ═══════════════
-    with tabs[13]:
+    with tabs[14]:
         st.subheader("🔬 Méta-analyse Race × Groupe & Enrichissement fonctionnel")
         st.markdown("## 1️⃣ Test de permutation")
         if st.session_state.gt_filt is not None:
@@ -1622,15 +1619,11 @@ def main():
             genes_to_enrich = None
             
             if src_g.startswith("SNPs Race"): 
-                if st.session_state.get("vep_res") is not None:
-                    genes_to_enrich = st.session_state.vep_res["GENE"].dropna().unique().tolist()
-                else:
-                    st.warning("⚠️ Lancez d'abord VEP sur ces SNPs pour obtenir les noms des gènes.")
+                if st.session_state.get("vep_res") is not None: genes_to_enrich = st.session_state.vep_res["GENE"].dropna().unique().tolist()
+                else: st.warning("⚠️ Lancez d'abord VEP sur ces SNPs pour obtenir les noms des gènes.")
             elif src_g.startswith("SNPs Groupe"): 
-                if st.session_state.get("vep_res") is not None:
-                    genes_to_enrich = st.session_state.vep_res["GENE"].dropna().unique().tolist()
-                else:
-                    st.warning("⚠️ Lancez d'abord VEP sur ces SNPs pour obtenir les noms des gènes.")
+                if st.session_state.get("vep_res") is not None: genes_to_enrich = st.session_state.vep_res["GENE"].dropna().unique().tolist()
+                else: st.warning("⚠️ Lancez d'abord VEP sur ces SNPs pour obtenir les noms des gènes.")
             elif src_g == "Gènes annotés (sel_ann)":
                 ann = st.session_state.get("sel_ann")
                 if ann is not None and "GENE" in ann.columns: genes_to_enrich = ann["GENE"].dropna().unique().tolist()
@@ -1638,13 +1631,11 @@ def main():
                 txt = st.text_area("Liste de gènes (1/ligne)", key="enr_manual")
                 if txt.strip(): genes_to_enrich = [g.strip() for g in txt.splitlines() if g.strip()]
             
-            if genes_to_enrich:
-                genes_to_enrich = [g for g in genes_to_enrich if str(g).strip() not in ("N/A", "Intergenic/Non-codant", "Unknown", "nan", "")]
+            if genes_to_enrich: genes_to_enrich = [g for g in genes_to_enrich if str(g).strip() not in ("N/A", "Intergenic/Non-codant", "Unknown", "nan", "")]
             
             if genes_to_enrich and st.button("🔬 Lancer enrichissement", type="primary", key="enr_btn"):
                 try:
-                    with st.spinner("Enrichissement (via orthologues humains)..."): 
-                        enr = run_enrichment(genes_to_enrich, gene_sets=gene_sets, organism="Human", outdir=outdir or None)
+                    with st.spinner("Enrichissement (via orthologues humains)..."): enr = run_enrichment(genes_to_enrich, gene_sets=gene_sets, organism="Human", outdir=outdir or None)
                     if enr.empty: st.warning("Aucun terme enrichi.")
                     else:
                         st.success(f"✅ {len(enr)} termes"); st.dataframe(enr.head(30), use_container_width=True)
@@ -1655,8 +1646,7 @@ def main():
         genes_string = []
         if st.session_state.get("sel_ann") is not None and not st.session_state.sel_ann.empty:
             ann = st.session_state.sel_ann
-            if "GENE" in ann.columns: 
-                genes_string = ann["GENE"].dropna().unique().tolist()
+            if "GENE" in ann.columns: genes_string = ann["GENE"].dropna().unique().tolist()
         st.info(f"Gènes disponibles : {len(genes_string)}")
         c1, c2 = st.columns(2); score_str = c1.selectbox("Score", [150, 400, 700, 900], index=1, key="string_score"); max_genes = c2.slider("Nb max", 5, 100, 30, key="string_max")
         if st.button("🕸️ Construire réseau STRING", type="primary", key="string_btn"):
@@ -1672,113 +1662,83 @@ def main():
             except Exception as e: st.error(f"❌ {e}")
 
     # ═══════════════ PRÉDICTION ML (Random Forest) ═══════════════
-    with tabs[14]:
+    with tabs[15]:
         st.subheader("🧠 Prédiction par Machine Learning (Random Forest)")
-        st.markdown("Comparez l'approche linéaire (GBLUP) avec un modèle non-linéaire (Forêt Aléatoire) pour voir si l'interaction entre les gènes améliore la prédiction.")
-        
         if st.session_state.gt_filt is not None and st.session_state.get("pheno_df") is not None:
             cols = [c for c in st.session_state.pheno_df.columns if c not in ("FID","IID","Animal")]
             if cols:
                 pc = st.selectbox("Phénotype à prédire", cols, key="ml_pc")
-                
                 if st.button("🚀 Entraîner le modèle Random Forest", type="primary", key="ml_btn"):
                     try:
                         gu = st.session_state.gt_pruned if st.session_state.gt_pruned is not None else st.session_state.gt_filt
                         sg = st.session_state.snp_pruned if st.session_state.snp_pruned is not None else st.session_state.snp_filt
-                        
                         ps = pd.to_numeric(st.session_state.pheno_df[pc], errors="coerce")
                         valid = np.isfinite(ps.values)
-                        
-                        if valid.sum() < 20:
-                            st.error("❌ Pas assez d'individus avec un phénotype valide.")
+                        if valid.sum() < 20: st.error("❌ Pas assez d'individus avec un phénotype valide.")
                         else:
-                            X = impute_mean(gu[valid])
-                            y = ps.values[valid]
-                            
+                            X = impute_mean(gu[valid]); y = ps.values[valid]
                             with st.spinner("Entraînement de la Forêt Aléatoire..."):
                                 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
                                 rf = RandomForestRegressor(n_estimators=100, random_state=42)
                                 rf.fit(X_train, y_train)
                                 y_pred = rf.predict(X_test)
                                 r2_rf = r2_score(y_test, y_pred)
-                                
                                 importances = rf.feature_importances_
-                                df_imp = pd.DataFrame({"SNP": sg["SNP"], "Importance": importances})
-                                df_imp = df_imp.sort_values("Importance", ascending=False).head(15)
-                                
+                                df_imp = pd.DataFrame({"SNP": sg["SNP"], "Importance": importances}).sort_values("Importance", ascending=False).head(15)
                             st.success(f"✅ Modèle entraîné ! Score R² (Random Forest) = {r2_rf:.3f}")
                             st.info("💡 Comparez ce R² avec le R² du GBLUP obtenu dans l'onglet précédent pour voir quel modèle est le plus précis.")
-                            
-                            fig = px.bar(df_imp, x="Importance", y="SNP", orientation='h', title="Top 15 des SNPs les plus importants pour la prédiction")
+                            fig = px.bar(df_imp, x="Importance", y="SNP", orientation='h', title="Top 15 des SNPs les plus importants")
                             fig.update_layout(yaxis={'categoryorder':'total ascending'})
                             st.plotly_chart(fig, use_container_width=True)
-                            
-                    except Exception as e:
-                        st.error(f"❌ Erreur ML : {e}")
-        else:
-            st.warning("⚠️ Chargez d'abord vos données et vos phénotypes.")
+                    except Exception as e: st.error(f"❌ Erreur ML : {e}")
+        else: st.warning("⚠️ Chargez d'abord vos données et vos phénotypes.")
 
     # ═══════════════ BLOCS HAPLOTYPES ═══════════════
-    with tabs[15]:
+    with tabs[16]:
         st.subheader("🧬 Visualisation des Blocs d'Haplotypes")
-        st.markdown("Identifiez visuellement les blocs génomiques transmis ensemble. Un bloc de couleur uniforme chez les animaux à croissance rapide indique une forte pression de sélection.")
-        
         if st.session_state.gt_filt is not None:
             gu = st.session_state.gt_pruned if st.session_state.gt_pruned is not None else st.session_state.gt_filt
             su = st.session_state.snp_pruned if st.session_state.snp_pruned is not None else st.session_state.snp_filt
             iu = st.session_state.ind_filt
-            
             c1, c2 = st.columns(2)
             chroms = sorted(su["CHR"].astype(str).unique())
             sel_chr = c1.selectbox("Chromosome à visualiser", chroms, key="hap_chr")
-            
             sub_idx = su[su["CHR"].astype(str) == sel_chr].index
             if len(sub_idx) > 0:
                 if len(sub_idx) > 50: sub_idx = sub_idx[:50] 
                 snps_names = su.loc[sub_idx, "SNP"].values
                 gt_sub = gu[:, sub_idx]
-                
                 groups = iu["FID"].astype(str).values
                 sort_idx = np.argsort(groups)
-                gt_sub_sorted = gt_sub[sort_idx]
-                groups_sorted = groups[sort_idx]
-                
+                gt_sub_sorted = gt_sub[sort_idx]; groups_sorted = groups[sort_idx]
                 fig = px.imshow(
                     gt_sub_sorted,
-                    labels=dict(x="Position des SNPs", y="Individus (triés par race)", color="Génotype (0,1,2)"),
+                    labels=dict(x="Position des SNPs", y="Individus", color="Génotype (0,1,2)"),
                     x=snps_names, y=groups_sorted,
                     color_continuous_scale=["#F0F0F0", "#3498db", "#e74c3c"],
-                    title=f"Blocs d'haplotypes - Chromosome {sel_chr}",
-                    aspect="auto"
+                    title=f"Blocs d'haplotypes - Chromosome {sel_chr}", aspect="auto"
                 )
                 st.plotly_chart(fig, use_container_width=True)
-                st.caption("🖱️ Survolez pour voir le génotype. Les lignes continues (même couleur) indiquent des blocs d'haplotypes partagés.")
-            else:
-                st.warning("Aucun SNP sur ce chromosome.")
+                st.caption("🖱️ Survolez pour voir le génotype. Les lignes continues (même couleur) indiquent des blocs partagés.")
+            else: st.warning("Aucun SNP sur ce chromosome.")
 
     # ═══════════════ LIFTOVER ═══════════════
-    with tabs[16]:
+    with tabs[17]:
         st.subheader("🌍 LiftOver (Conversion Bovin -> Humain)")
-        st.markdown("Convertissez les coordonnées de vos gènes bovins vers le génome humain pour trouver des équivalents et des fonctions connues.")
-        
         if st.session_state.get("snp_filt") is not None:
             su = st.session_state.snp_pruned if st.session_state.snp_pruned is not None else st.session_state.snp_filt
             snps_list = su["SNP"].tolist()
             target_snp = st.selectbox("Choisissez un SNP à convertir", snps_list, key="lift_snp")
-            
             if st.button("🔄 Convertir via Ensembl", type="primary", key="lift_btn"):
                 row = su[su["SNP"] == target_snp].iloc[0]
                 chrom, bp = str(row["CHR"]), int(row["BP"])
-                
                 with st.spinner(f"Recherche de l'orthologue humain pour {chrom}:{bp}..."):
                     human_chr, human_bp = lift_over(chrom, bp)
                     if human_chr:
                         st.success(f"✅ SNP {target_snp} (Bovin {chrom}:{bp}) trouvé chez l'Homme sur le chromosome **{human_chr}** à la position **{human_bp}**.")
                         st.info("💡 Vous pouvez maintenant chercher cette position sur la base de données humaine (GWAS Catalog) pour voir si elle est associée à un phénotype connu.")
-                    else:
-                        st.error("❌ Aucune correspondance trouvée (région non conservée ou erreur API).")
-        else:
-            st.warning("Chargez des données pour utiliser le LiftOver.")
+                    else: st.error("❌ Aucune correspondance trouvée.")
+        else: st.warning("Chargez des données pour utiliser le LiftOver.")
 
 if __name__ == "__main__":
     main()
