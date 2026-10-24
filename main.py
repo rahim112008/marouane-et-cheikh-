@@ -1,4 +1,4 @@
-"""🐄 Bovine Genomics Pipeline v11.4 — Ultimate Edition (VEP, NCBI & 3D)"""
+"""🐄 Bovine Genomics Pipeline v11.5 — Ultimate Edition (VEP, NCBI & 3D)"""
 import gzip, io, os, warnings, zipfile, subprocess, tempfile, shutil
 from collections import Counter
 from io import BytesIO
@@ -21,7 +21,7 @@ import streamlit.components.v1 as components
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
-st.set_page_config(page_title="🐄 Bovine Pipeline v11.4", page_icon="🐄", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="🐄 Bovine Pipeline v11.5", page_icon="🐄", layout="wide", initial_sidebar_state="expanded")
 
 ARS = {"1":158_534_110,"2":136_231_102,"3":121_005_158,"4":120_000_166,"5":120_089_699,"6":117_806_340,"7":110_682_743,"8":113_384_748,"9":105_708_134,"10":103_308_737,"11":107_310_763,"12":91_163_125,"13":84_246_514,"14":84_648_346,"15":85_207_080,"16":81_726_628,"17":75_176_999,"18":66_059_976,"19":64_089_169,"20":72_042_983,"21":71_599_096,"22":61_416_492,"23":52_531_573,"24":62_384_193,"25":42_959_610,"26":51_680_158,"27":46_772_073,"28":46_333_854,"29":51_319_414}
 AUTO = [str(i) for i in range(1,30)]
@@ -481,7 +481,9 @@ def ne_historical(gt, snp_df, max_snp=2000):
     m=np.isfinite(r2b)
     if m.sum()<3: return pd.DataFrame({"GenAgo":[],"Ne":[]})
     r2_adj = np.clip(r2b - 1.0 / X.shape[0], 1e-6, None)
+    # Formule simplifiée de Sved (1971) : Ne = 1 / (4 * c * r2). On suppose c = distance en cM.
     ne=np.where(r2_adj[m]>1e-4,1.0/(4*(bc[m]*0.01)*r2_adj[m]),np.nan)
+    # On suppose 1 cM = 100 générations (approximation pour le bétail)
     df=pd.DataFrame({"GenAgo":bc[m]*100,"Ne":ne}).dropna(); df=df[df["Ne"]>0].sort_values("GenAgo")
     if len(df)>3: df["Ne"]=df["Ne"].rolling(3,center=True,min_periods=1).mean()
     return df
@@ -531,7 +533,8 @@ def tajimas_window(genos):
         p=col.mean()/2.0
         if 0<p<1: S+=1; piv.append(2*p*(1-p)*(len(col)/(len(col)-1)))
     if S==0 or not piv: return np.nan,int(S)
-    pi=np.mean(piv); n=ni; a1=np.sum(1.0/np.arange(1,n)); a2=np.sum(1.0/(np.arange(1,n)**2))
+    pi=np.mean(piv); n=ni*2 # CORRECTION: Nombre de chromosomes (2n)
+    a1=np.sum(1.0/np.arange(1,n)); a2=np.sum(1.0/(np.arange(1,n)**2))
     b1=(n+1)/(3*(n-1)); b2=2*(n**2+n+3)/(9*n*(n-1))
     c1=b1-1/a1; c2=b2-(n+2)/(a1*n)+a2/(a1**2); e1=c1/a1; e2=c2/(a1**2+a2)
     den=np.sqrt(e1*S+e2*S*(S-1))
@@ -571,7 +574,7 @@ def reynolds(gt, labels):
     return D,pops
 
 @cache_data
-def nj_bootstrap(gt, snp_df, labels, n_boot=100, seed=42):
+def upgma_bootstrap(gt, snp_df, labels, n_boot=100, seed=42):
     from scipy.cluster.hierarchy import linkage, to_tree
     from scipy.spatial.distance import squareform
     labels=np.asarray(labels).astype(str); pops=sorted(np.unique(labels)); K=len(pops); n_snp=gt.shape[1]
@@ -691,8 +694,9 @@ def get_pairs(labels):
 @cache_data
 def permutation_test_race(gt, snp_df, labels, ra, rb, n_perm=100, seed=42, max_snp=5000):
     rng = np.random.default_rng(seed)
-    if snp_df.shape[1] > max_snp:
-        idx = np.sort(rng.choice(snp_df.shape[1], max_snp, replace=False))
+    # CORRECTION : len(snp_df) au lieu de snp_df.shape[1] (qui est 1 pour un DataFrame 1D)
+    if len(snp_df) > max_snp:
+        idx = np.sort(rng.choice(len(snp_df), max_snp, replace=False))
         snp_df = snp_df.iloc[idx].reset_index(drop=True)
         gt = gt[:, idx]
     original = gwas_pairwise(gt, snp_df, labels, ra, rb)
@@ -789,6 +793,32 @@ def fetch_ncbi_gene_info(gene_list, taxon="9913"):
         time.sleep(0.4)
     return pd.DataFrame(results)
 
+def fetch_ncbi_dbsnp_info(rsid_list):
+    """CORRECTION : Fonction réintégrée"""
+    if not rsid_list: return pd.DataFrame()
+    results = []
+    for rsid in rsid_list:
+        rsid_clean = str(rsid).replace("rs", "")
+        url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi"
+        params = {"db": "snp", "id": rsid_clean, "retmode": "json"}
+        try:
+            req = requests.get(url, params=params, timeout=30)
+            if req.status_code == 200:
+                data = req.json()
+                snp_data = data.get("result", {}).get(rsid_clean, {})
+                results.append({
+                    "rsID": f"rs{rsid_clean}",
+                    "Classe": snp_data.get("variant_class", "N/A"),
+                    "Fréquence globale": snp_data.get("global_maf", "N/A"),
+                    "Gènes associés": ", ".join([g.get("name", "") for g in snp_data.get("genes", [])])
+                })
+            else:
+                results.append({"rsID": rsid, "Classe": "Non trouvé", "Fréquence globale": "N/A", "Gènes associés": "N/A"})
+        except Exception as e:
+            results.append({"rsID": rsid, "Classe": "Erreur API", "Fréquence globale": "N/A", "Gènes associés": str(e)})
+        time.sleep(0.4)
+    return pd.DataFrame(results)
+
 def fetch_uniprot_id(gene_name, taxon="9913"):
     query = f"gene:{gene_name} AND organism_id:{taxon}"
     url = f"https://rest.uniprot.org/uniprotkb/search?query={quote(query)}&format=json&size=1"
@@ -847,7 +877,8 @@ def render_3d_structure(pdb_data, style="cartoon", color_scheme="spectrum", high
 # ============================================================
 # AUTRES FONCTIONS (Annotation, GSEA, STRING)
 # ============================================================
-def run_enrichment(gene_list, gene_sets=None, organism="bovine", outdir=None):
+def run_enrichment(gene_list, gene_sets=None, organism="Human", outdir=None):
+    """CORRECTION : Organisme 'Human' pour Enrichr (pas Bovine) + Vérification que ce sont des gènes"""
     try:
         import gseapy as gp
         genes = [str(g).strip() for g in gene_list if str(g).strip() and str(g) != "nan"]
@@ -886,7 +917,7 @@ def plot_string_network(edges, nodes):
     try:
         import networkx as nx
     except ImportError:
-        st.error("⚠️ Le module `networkx` n'est pas installé sur le serveur. Ajoutez `networkx` à votre fichier `requirements.txt`.")
+        st.error("⚠️ Le module `networkx` n'est pas installé. Ajoutez `networkx` à votre fichier `requirements.txt`.")
         return None
     
     G = nx.Graph()
@@ -1188,7 +1219,7 @@ def init_state():
 
 def main():
     init_state()
-    st.title("🐄 Bovine Genomics Pipeline v11.4")
+    st.title("🐄 Bovine Genomics Pipeline v11.5")
     st.caption("Race × Race | Groupe × Groupe | VEP, NCBI & Structure 3D intégrés")
 
     with st.sidebar:
@@ -1325,7 +1356,7 @@ def main():
             dff=pd.DataFrame({"SNP":sf["SNP"].values[:nf],"CHR":sf["CHR"].values[:nf],"BP":sf["BP"].values[:nf],"FST":st.session_state.fst[:nf]})
             st.plotly_chart(plot_manhattan(dff,yc="FST",title="FST par SNP"),use_container_width=True,key="plot_manh_fst_snp")
 
-        st.divider(); st.subheader("🌳 Arbre NJ (bootstrap + midpoint)")
+        st.divider(); st.subheader("🌳 Arbre UPGMA (bootstrap + midpoint)")
         if st.session_state.reyn_D is not None:
             c1,c2=st.columns(2); nb=c1.slider("Bootstrap",10,500,100,10,key="nj_boot"); ro=c2.selectbox("Root",["Non-enraciné","Midpoint"],key="nj_root")
             if st.button("🌲 Construire l'arbre",type="primary",key="nj_btn"):
@@ -1333,8 +1364,8 @@ def main():
                     gu=st.session_state.gt_pruned if st.session_state.gt_pruned is not None else st.session_state.gt_filt
                     su=st.session_state.snp_pruned if st.session_state.snp_pruned is not None else st.session_state.snp_filt
                     lab=st.session_state.ind_filt["FID"].astype(str).values
-                    with st.spinner(f"NJ + {nb} boot..."):
-                        r=nj_bootstrap(gu,su,lab,n_boot=int(nb)); st.session_state.nj_result=r
+                    with st.spinner(f"UPGMA + {nb} boot..."):
+                        r=upgma_bootstrap(gu,su,lab,n_boot=int(nb)); st.session_state.nj_result=r
                         st.session_state.nj_mid=midpoint_info(r["D"],r["pops"])
                     st.success("✅")
                 except Exception as e: st.error(f"❌ {e}")
@@ -1343,7 +1374,7 @@ def main():
                 c1,c2,c3,c4=st.columns(4); c1.metric("Races",len(r["pops"])); c2.metric("Nœuds",len(r["support"]))
                 c3.metric("Supp≥70%",f"{(r['support']>=70).sum()}/{len(r['support'])}"); c4.metric("Dist max",f"{mp['max_dist']:.4f}" if mp else "N/A")
                 if mp: st.info(f"Midpoint entre **{mp['leaf_i']}** et **{mp['leaf_j']}** ({mp['midpoint']:.4f})")
-                f=plot_tree(r["Z"],r["pops"],r["support"],title=f"NJ ({nb} boot)",mid=mp if ro=="Midpoint" else None)
+                f=plot_tree(r["Z"],r["pops"],r["support"],title=f"UPGMA ({nb} boot)",mid=mp if ro=="Midpoint" else None)
                 st.plotly_chart(f,use_container_width=True,key="plot_nj_tree")
 
         st.divider(); st.subheader("🧬 GWAS case-control (Race × Race OU Groupe × Groupe)")
@@ -1382,7 +1413,8 @@ def main():
                 c1, c2 = st.columns(2); ga = c1.selectbox("Groupe A", groups, index=0, key="grp_a"); gb = c2.selectbox("Groupe B", groups, index=1 if len(groups) > 1 else 0, key="grp_b")
                 mtd_g = c1.selectbox("Méthode", ["allelic", "logistic"], key="pm_grp"); mf_g = c2.slider("MAF", 0.0, 0.3, 0.05, key="pmf_grp")
                 nA = (iu_g["FID_GROUPE"] == ga).sum(); nB = (iu_g["FID_GROUPE"] == gb).sum()
-                st.info(f"📊 **{ga}** ({nA} ind) vs **{gb}** ({nB} ind)")
+                rA = iu_g[iu_g["FID_GROUPE"] == ga]["FID"].nunique(); rB = iu_g[iu_g["FID_GROUPE"] == gb]["FID"].nunique()
+                st.info(f"📊 **{ga}** ({nA} individus, {rA} races) vs **{gb}** ({nB} individus, {rB} races)")
                 if ga != gb and st.button(f"🚀 {ga} vs {gb}", type="primary", key="pr_btn_grp"):
                     try:
                         with st.spinner(f"{ga} vs {gb}..."):
@@ -1628,9 +1660,13 @@ def main():
                         row = snp_full[snp_full["SNP"].astype(str) == str(s)]
                         if not row.empty:
                             r = row.iloc[0]
-                            ref = r.get("A1", "A") if r.get("A1", "A") not in (".", "") else "A"
-                            alt = r.get("A2", "G") if r.get("A2", "G") not in (".", "") else "G"
-                            vep_input.append(f"{r['CHR']}:{int(r['BP'])}:{ref}:{alt}")
+                            ref = r.get("A1")
+                            alt = r.get("A2")
+                            # CORRECTION : Si pas d'allèles, on envoie juste CHR:POS (VEP cherchera)
+                            if pd.isna(ref) or pd.isna(alt) or ref in (".","") or alt in (".",""):
+                                vep_input.append(f"{r['CHR']}:{int(r['BP'])}")
+                            else:
+                                vep_input.append(f"{r['CHR']}:{int(r['BP'])}:{ref}:{alt}")
                         else:
                             vep_input.append(s)
 
@@ -1760,6 +1796,7 @@ def main():
                 except Exception as e: st.error(f"❌ {e}")
 
         st.divider(); st.markdown("## 2️⃣ Méta-analyse Fisher")
+        st.warning("⚠️ Note : Les tests comparant les mêmes individus ne sont pas indépendants. Les p-values combinées par Fisher sont indicatives (trop optimistes).")
         res_r = st.session_state.get("pair_res_race"); res_g = st.session_state.get("pair_res_group")
         if res_r is None or res_g is None: st.warning("⚠️ Lancez une analyse Race × Race puis Groupe × Groupe.")
         else:
@@ -1782,17 +1819,33 @@ def main():
             gene_sets = None
             if gmt_file is not None: gene_sets = parse_gmt(gmt_file.read()); st.success(f"✅ {len(gene_sets)} gene sets")
             genes_to_enrich = None
-            if src_g.startswith("SNPs Race"): genes_to_enrich = res_r["SNP"].head(50).tolist()
-            elif src_g.startswith("SNPs Groupe"): genes_to_enrich = res_g["SNP"].head(50).tolist()
+            
+            # CORRECTION : On s'assure de récupérer des GÈNES, pas des SNPs
+            if src_g.startswith("SNPs Race"): 
+                if st.session_state.get("vep_res") is not None:
+                    genes_to_enrich = st.session_state.vep_res["GENE"].dropna().unique().tolist()
+                else:
+                    st.warning("⚠️ Lancez d'abord VEP sur ces SNPs pour obtenir les noms des gènes.")
+            elif src_g.startswith("SNPs Groupe"): 
+                if st.session_state.get("vep_res") is not None:
+                    genes_to_enrich = st.session_state.vep_res["GENE"].dropna().unique().tolist()
+                else:
+                    st.warning("⚠️ Lancez d'abord VEP sur ces SNPs pour obtenir les noms des gènes.")
             elif src_g == "Gènes annotés (sel_ann)":
                 ann = st.session_state.get("sel_ann")
                 if ann is not None and "GENE" in ann.columns: genes_to_enrich = ann["GENE"].dropna().unique().tolist()
             else:
                 txt = st.text_area("Liste de gènes (1/ligne)", key="enr_manual")
                 if txt.strip(): genes_to_enrich = [g.strip() for g in txt.splitlines() if g.strip()]
+            
+            if genes_to_enrich:
+                genes_to_enrich = [g for g in genes_to_enrich if str(g).strip() not in ("N/A", "Intergenic/Non-codant", "Unknown", "nan", "")]
+            
             if genes_to_enrich and st.button("🔬 Lancer enrichissement", type="primary", key="enr_btn"):
                 try:
-                    with st.spinner("Enrichissement..."): enr = run_enrichment(genes_to_enrich, gene_sets=gene_sets, organism="bovine", outdir=outdir or None)
+                    # CORRECTION : organism="Human" car Enrichr ne gère pas Bovine
+                    with st.spinner("Enrichissement (via orthologues humains)..."): 
+                        enr = run_enrichment(genes_to_enrich, gene_sets=gene_sets, organism="Human", outdir=outdir or None)
                     if enr.empty: st.warning("Aucun terme enrichi.")
                     else:
                         st.success(f"✅ {len(enr)} termes"); st.dataframe(enr.head(30), use_container_width=True)
