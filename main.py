@@ -1736,12 +1736,13 @@ def main():
                 st.dataframe(st.session_state.ncbi_snp_res, use_container_width=True)
                 st.download_button("⬇ Export dbSNP CSV", st.session_state.ncbi_snp_res.to_csv(index=False).encode(), "dbsnp_info.csv", "text/csv")
 
-    # ═══════════════ VISUALISATION 3D (AlphaFold) ═══════════════
+        # ═══════════════ VISUALISATION 3D (AlphaFold) ═══════════════
     with tabs[11]:
         st.subheader("🧬 Visualisation 3D des Protéines (AlphaFold)")
         st.markdown("Explorez la structure tridimensionnelle des protéines codées par vos gènes candidats.")
         
-                genes_to_structure = []
+        genes_to_structure = []
+        
         # On vérifie VEP
         if st.session_state.get("vep_res") is not None and not st.session_state.vep_res.empty and "GENE" in st.session_state.vep_res.columns:
             genes_to_structure = [g for g in st.session_state.vep_res["GENE"].unique() if str(g).strip() not in ("N/A", "Intergenic/Non-codant", "Unknown", "nan", "")]
@@ -1750,12 +1751,35 @@ def main():
         elif st.session_state.get("sel_ann") is not None and not st.session_state.sel_ann.empty and "GENE" in st.session_state.sel_ann.columns:
             genes_to_structure = [g for g in st.session_state.sel_ann["GENE"].unique() if str(g).strip() not in ("N/A", "Intergenic/Non-codant", "Unknown", "nan", "")]
         
-        # LA CORRECTION EST ICI : On vérifie aussi l'annotation dédiée (ann_df)
+        # On vérifie l'annotation dédiée (ann_df)
         elif st.session_state.get("ann_df") is not None and not st.session_state.ann_df.empty and "GENE" in st.session_state.ann_df.columns:
             genes_to_structure = [g for g in st.session_state.ann_df["GENE"].unique() if str(g).strip() not in ("N/A", "Intergenic/Non-codant", "Unknown", "nan", "")]
         
         else:
             st.warning("⚠️ Veuillez d'abord lancer l'annotation VEP ou l'annotation des gènes pour obtenir une liste de gènes.")
+            
+        if genes_to_structure:
+            c1, c2, c3 = st.columns(3)
+            target_gene = c1.selectbox("Sélectionnez le gène", genes_to_structure, key="gene_3d")
+            view_style = c2.selectbox("Style de représentation", ["cartoon", "stick", "sphere", "line"], key="style_3d")
+            color_scheme = c3.selectbox("Coloration", ["spectrum", "chainHetatm", "ssPyMol"], key="color_3d")
+            
+            highlight_res = st.text_input("Surligner un acide aminé spécifique (facultatif, ex: 123)", key="hl_res")
+            
+            if st.button("🔬 Charger la structure 3D", type="primary", key="btn_load_3d"):
+                with st.spinner(f"Recherche de la structure pour {target_gene}..."):
+                    uniprot_id = fetch_uniprot_id(target_gene, taxon="9913")
+                    if uniprot_id:
+                        st.success(f"✅ ID UniProt trouvé : {uniprot_id}")
+                        pdb_data = fetch_alphafold_pdb(uniprot_id)
+                        if pdb_data:
+                            st.info("💡 Vous pouvez interagir avec la molécule (cliquer-glisser pour tourner, molette pour zoomer).")
+                            render_3d_structure(pdb_data, style=view_style, color_scheme=color_scheme, highlight_res=highlight_res)
+                        else:
+                            st.error("❌ Structure AlphaFold introuvable pour cette protéine.")
+                    else:
+                        st.error("❌ Gène non trouvé dans UniProt pour ce taxon.")
+
     # ═══════════════ Export ═══════════════
     with tabs[12]:
         if st.session_state.gt_filt is not None:
