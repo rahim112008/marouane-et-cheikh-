@@ -1682,11 +1682,12 @@ def main():
 
             st.markdown("### 3️⃣ Fonctions officielles des gènes (NCBI Gene)")
             st.caption("Récupère la description officielle et le résumé fonctionnel de chaque gène via l'API NCBI.")
-            
+           
             genes_to_fetch = []
-            if st.session_state.get("vep_res") is not None:
+            # Sécurité : On vérifie que le tableau existe, n'est pas vide, et contient bien la colonne "GENE"
+            if st.session_state.get("vep_res") is not None and not st.session_state.vep_res.empty and "GENE" in st.session_state.vep_res.columns:
                 genes_to_fetch = st.session_state.vep_res["GENE"].dropna().unique().tolist()
-            elif st.session_state.get("sel_ann") is not None:
+            elif st.session_state.get("sel_ann") is not None and not st.session_state.sel_ann.empty and "GENE" in st.session_state.sel_ann.columns:
                 genes_to_fetch = st.session_state.sel_ann["GENE"].dropna().unique().tolist()
                 
             genes_to_fetch = [g for g in genes_to_fetch if str(g).strip() not in ("N/A", "Intergenic/Non-codant", "Unknown", "nan", "")]
@@ -1726,13 +1727,14 @@ def main():
         st.subheader("🧬 Visualisation 3D des Protéines (AlphaFold)")
         st.markdown("Explorez la structure tridimensionnelle des protéines codées par vos gènes candidats.")
         
-        if st.session_state.get("vep_res") is not None:
+        genes_to_structure = []
+        # Sécurité : On vérifie que la colonne GENE existe bien
+        if st.session_state.get("vep_res") is not None and not st.session_state.vep_res.empty and "GENE" in st.session_state.vep_res.columns:
             genes_to_structure = [g for g in st.session_state.vep_res["GENE"].unique() if str(g).strip() not in ("N/A", "Intergenic/Non-codant", "Unknown", "nan", "")]
-        elif st.session_state.get("sel_ann") is not None:
+        elif st.session_state.get("sel_ann") is not None and not st.session_state.sel_ann.empty and "GENE" in st.session_state.sel_ann.columns:
             genes_to_structure = [g for g in st.session_state.sel_ann["GENE"].unique() if str(g).strip() not in ("N/A", "Intergenic/Non-codant", "Unknown", "nan", "")]
         else:
-            genes_to_structure = []
-            st.warning("⚠️ Veuillez d'abord lancer l'annotation VEP ou l'annotation des gènes pour obtenir une liste de gènes.")
+             st.warning("⚠️ Veuillez d'abord lancer l'analyse VEP ou l'annotation des gènes pour obtenir une liste de gènes.")
             
         if genes_to_structure:
             c1, c2, c3 = st.columns(3)
@@ -1854,9 +1856,11 @@ def main():
 
         st.divider(); st.markdown("## 4️⃣ Réseau STRING")
         genes_string = []
-        if st.session_state.get("sel_ann") is not None:
+        if st.session_state.get("sel_ann") is not None and not st.session_state.sel_ann.empty:
             ann = st.session_state.sel_ann
-            if "GENE" in ann.columns: genes_string = ann["GENE"].dropna().unique().tolist()
+            if "GENE" in ann.columns: 
+                genes_string = ann["GENE"].dropna().unique().tolist()
+        
         st.info(f"Gènes disponibles : {len(genes_string)}")
         c1, c2 = st.columns(2); score_str = c1.selectbox("Score", [150, 400, 700, 900], index=1, key="string_score"); max_genes = c2.slider("Nb max", 5, 100, 30, key="string_max")
         if st.button("🕸️ Construire réseau STRING", type="primary", key="string_btn"):
