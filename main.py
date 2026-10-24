@@ -1,4 +1,4 @@
-"""🐄 Bovine Genomics Pipeline v11.5 — Ultimate Edition (VEP, NCBI & 3D)"""
+"""🐄 Bovine Genomics Pipeline v11.6 — Ultimate Edition (VEP, NCBI & 3D)"""
 import gzip, io, os, warnings, zipfile, subprocess, tempfile, shutil
 from collections import Counter
 from io import BytesIO
@@ -21,7 +21,7 @@ import streamlit.components.v1 as components
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
-st.set_page_config(page_title="🐄 Bovine Pipeline v11.5", page_icon="🐄", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="🐄 Bovine Pipeline v11.6", page_icon="🐄", layout="wide", initial_sidebar_state="expanded")
 
 ARS = {"1":158_534_110,"2":136_231_102,"3":121_005_158,"4":120_000_166,"5":120_089_699,"6":117_806_340,"7":110_682_743,"8":113_384_748,"9":105_708_134,"10":103_308_737,"11":107_310_763,"12":91_163_125,"13":84_246_514,"14":84_648_346,"15":85_207_080,"16":81_726_628,"17":75_176_999,"18":66_059_976,"19":64_089_169,"20":72_042_983,"21":71_599_096,"22":61_416_492,"23":52_531_573,"24":62_384_193,"25":42_959_610,"26":51_680_158,"27":46_772_073,"28":46_333_854,"29":51_319_414}
 AUTO = [str(i) for i in range(1,30)]
@@ -204,16 +204,33 @@ def parse_ped(b, n_map):
         p=line.split()
         if len(p)>=ec: fids.append(p[0]); iids.append(p[1]); rows.append(p[6:6+2*n])
     if not iids: raise ValueError("Aucun individu")
+    
     ac=[Counter() for _ in range(n)]
     for r in rows:
         for j in range(n):
             if r[2*j]!="0" and r[2*j+1]!="0": ac[j].update([r[2*j],r[2*j+1]])
+            
+    # Extraction des allèles A1 et A2 pour VEP
+    alleles_A1, alleles_A2 = [], []
+    for c in ac:
+        common = c.most_common(2)
+        if len(common) >= 2:
+            alleles_A1.append(common[0][0])
+            alleles_A2.append(common[1][0])
+        elif len(common) == 1:
+            alleles_A1.append(common[0][0])
+            alleles_A2.append(".") 
+        else:
+            alleles_A1.append(".")
+            alleles_A2.append(".")
+
     minor=[min(c,key=c.get) if len(c)>=2 else None for c in ac]
     gt=np.full((len(iids),n),np.nan,dtype=np.float32)
     for i,r in enumerate(rows):
         for j in range(n):
             if minor[j] and r[2*j]!="0" and r[2*j+1]!="0": gt[i,j]=(r[2*j]==minor[j])+(r[2*j+1]==minor[j])
-    return gt, pd.DataFrame({"FID":fids,"IID":iids})
+            
+    return gt, pd.DataFrame({"FID":fids,"IID":iids}), alleles_A1, alleles_A2
 
 def parse_vcf(b):
     samples,rows=[],[]
@@ -481,9 +498,7 @@ def ne_historical(gt, snp_df, max_snp=2000):
     m=np.isfinite(r2b)
     if m.sum()<3: return pd.DataFrame({"GenAgo":[],"Ne":[]})
     r2_adj = np.clip(r2b - 1.0 / X.shape[0], 1e-6, None)
-    # Formule simplifiée de Sved (1971) : Ne = 1 / (4 * c * r2). On suppose c = distance en cM.
     ne=np.where(r2_adj[m]>1e-4,1.0/(4*(bc[m]*0.01)*r2_adj[m]),np.nan)
-    # On suppose 1 cM = 100 générations (approximation pour le bétail)
     df=pd.DataFrame({"GenAgo":bc[m]*100,"Ne":ne}).dropna(); df=df[df["Ne"]>0].sort_values("GenAgo")
     if len(df)>3: df["Ne"]=df["Ne"].rolling(3,center=True,min_periods=1).mean()
     return df
@@ -533,7 +548,7 @@ def tajimas_window(genos):
         p=col.mean()/2.0
         if 0<p<1: S+=1; piv.append(2*p*(1-p)*(len(col)/(len(col)-1)))
     if S==0 or not piv: return np.nan,int(S)
-    pi=np.mean(piv); n=ni*2 # CORRECTION: Nombre de chromosomes (2n)
+    pi=np.mean(piv); n=ni*2 
     a1=np.sum(1.0/np.arange(1,n)); a2=np.sum(1.0/(np.arange(1,n)**2))
     b1=(n+1)/(3*(n-1)); b2=2*(n**2+n+3)/(9*n*(n-1))
     c1=b1-1/a1; c2=b2-(n+2)/(a1*n)+a2/(a1**2); e1=c1/a1; e2=c2/(a1**2+a2)
@@ -694,7 +709,6 @@ def get_pairs(labels):
 @cache_data
 def permutation_test_race(gt, snp_df, labels, ra, rb, n_perm=100, seed=42, max_snp=5000):
     rng = np.random.default_rng(seed)
-    # CORRECTION : len(snp_df) au lieu de snp_df.shape[1] (qui est 1 pour un DataFrame 1D)
     if len(snp_df) > max_snp:
         idx = np.sort(rng.choice(len(snp_df), max_snp, replace=False))
         snp_df = snp_df.iloc[idx].reset_index(drop=True)
@@ -794,7 +808,6 @@ def fetch_ncbi_gene_info(gene_list, taxon="9913"):
     return pd.DataFrame(results)
 
 def fetch_ncbi_dbsnp_info(rsid_list):
-    """CORRECTION : Fonction réintégrée"""
     if not rsid_list: return pd.DataFrame()
     results = []
     for rsid in rsid_list:
@@ -878,7 +891,6 @@ def render_3d_structure(pdb_data, style="cartoon", color_scheme="spectrum", high
 # AUTRES FONCTIONS (Annotation, GSEA, STRING)
 # ============================================================
 def run_enrichment(gene_list, gene_sets=None, organism="Human", outdir=None):
-    """CORRECTION : Organisme 'Human' pour Enrichr (pas Bovine) + Vérification que ce sont des gènes"""
     try:
         import gseapy as gp
         genes = [str(g).strip() for g in gene_list if str(g).strip() and str(g) != "nan"]
@@ -917,7 +929,7 @@ def plot_string_network(edges, nodes):
     try:
         import networkx as nx
     except ImportError:
-        st.error("⚠️ Le module `networkx` n'est pas installé. Ajoutez `networkx` à votre fichier `requirements.txt`.")
+        st.error("⚠️ Le module `networkx` n'est pas installé sur le serveur. Ajoutez `networkx` à votre fichier `requirements.txt`.")
         return None
     
     G = nx.Graph()
@@ -1219,7 +1231,7 @@ def init_state():
 
 def main():
     init_state()
-    st.title("🐄 Bovine Genomics Pipeline v11.5")
+    st.title("🐄 Bovine Genomics Pipeline v11.6")
     st.caption("Race × Race | Groupe × Groupe | VEP, NCBI & Structure 3D intégrés")
 
     with st.sidebar:
@@ -1232,9 +1244,13 @@ def main():
             ped=st.file_uploader(".ped",type=["ped","gz"]); mp=st.file_uploader(".map",type=["map","gz"])
             if ped and mp and st.button("📥 Charger"):
                 try:
-                    mdf=parse_map(mp.read()); gt,ind=parse_ped(ped.read(),len(mdf))
+                    mdf=parse_map(mp.read()); gt,ind, a1, a2 = parse_ped(ped.read(),len(mdf))
                     if len(mdf)>gt.shape[1]: mdf=mdf.iloc[:gt.shape[1]].reset_index(drop=True)
                     elif len(mdf)<gt.shape[1]: gt=gt[:,:len(mdf)]
+                    
+                    mdf["A1"] = a1
+                    mdf["A2"] = a2
+                    
                     reset_derived(); st.session_state.update({"gt":gt,"ind_df":rec_fid(ind),"snp_df":mdf}); st.success(f"✅ {gt.shape[0]}×{gt.shape[1]}")
                 except Exception as e: st.error(f"❌ {e}")
         elif mode=="VCF":
@@ -1660,11 +1676,10 @@ def main():
                         row = snp_full[snp_full["SNP"].astype(str) == str(s)]
                         if not row.empty:
                             r = row.iloc[0]
-                            ref = r.get("A1")
-                            alt = r.get("A2")
-                            # CORRECTION : Si pas d'allèles, on envoie juste CHR:POS (VEP cherchera)
-                            if pd.isna(ref) or pd.isna(alt) or ref in (".","") or alt in (".",""):
-                                vep_input.append(f"{r['CHR']}:{int(r['BP'])}")
+                            ref = r.get("A1", ".")
+                            alt = r.get("A2", ".")
+                            if ref in (".", "", None, "nan") or alt in (".", "", None, "nan"):
+                                vep_input.append(f"{r['CHR']}:{int(r['BP'])}-{int(r['BP'])}")
                             else:
                                 vep_input.append(f"{r['CHR']}:{int(r['BP'])}:{ref}:{alt}")
                         else:
@@ -1682,9 +1697,8 @@ def main():
 
             st.markdown("### 3️⃣ Fonctions officielles des gènes (NCBI Gene)")
             st.caption("Récupère la description officielle et le résumé fonctionnel de chaque gène via l'API NCBI.")
-           
+            
             genes_to_fetch = []
-            # Sécurité : On vérifie que le tableau existe, n'est pas vide, et contient bien la colonne "GENE"
             if st.session_state.get("vep_res") is not None and not st.session_state.vep_res.empty and "GENE" in st.session_state.vep_res.columns:
                 genes_to_fetch = st.session_state.vep_res["GENE"].dropna().unique().tolist()
             elif st.session_state.get("sel_ann") is not None and not st.session_state.sel_ann.empty and "GENE" in st.session_state.sel_ann.columns:
@@ -1728,13 +1742,12 @@ def main():
         st.markdown("Explorez la structure tridimensionnelle des protéines codées par vos gènes candidats.")
         
         genes_to_structure = []
-        # Sécurité : On vérifie que la colonne GENE existe bien
         if st.session_state.get("vep_res") is not None and not st.session_state.vep_res.empty and "GENE" in st.session_state.vep_res.columns:
             genes_to_structure = [g for g in st.session_state.vep_res["GENE"].unique() if str(g).strip() not in ("N/A", "Intergenic/Non-codant", "Unknown", "nan", "")]
         elif st.session_state.get("sel_ann") is not None and not st.session_state.sel_ann.empty and "GENE" in st.session_state.sel_ann.columns:
             genes_to_structure = [g for g in st.session_state.sel_ann["GENE"].unique() if str(g).strip() not in ("N/A", "Intergenic/Non-codant", "Unknown", "nan", "")]
         else:
-             st.warning("⚠️ Veuillez d'abord lancer l'analyse VEP ou l'annotation des gènes pour obtenir une liste de gènes.")
+            st.warning("⚠️ Veuillez d'abord lancer l'annotation VEP ou l'annotation des gènes pour obtenir une liste de gènes.")
             
         if genes_to_structure:
             c1, c2, c3 = st.columns(3)
@@ -1822,7 +1835,6 @@ def main():
             if gmt_file is not None: gene_sets = parse_gmt(gmt_file.read()); st.success(f"✅ {len(gene_sets)} gene sets")
             genes_to_enrich = None
             
-            # CORRECTION : On s'assure de récupérer des GÈNES, pas des SNPs
             if src_g.startswith("SNPs Race"): 
                 if st.session_state.get("vep_res") is not None:
                     genes_to_enrich = st.session_state.vep_res["GENE"].dropna().unique().tolist()
@@ -1845,7 +1857,6 @@ def main():
             
             if genes_to_enrich and st.button("🔬 Lancer enrichissement", type="primary", key="enr_btn"):
                 try:
-                    # CORRECTION : organism="Human" car Enrichr ne gère pas Bovine
                     with st.spinner("Enrichissement (via orthologues humains)..."): 
                         enr = run_enrichment(genes_to_enrich, gene_sets=gene_sets, organism="Human", outdir=outdir or None)
                     if enr.empty: st.warning("Aucun terme enrichi.")
@@ -1860,7 +1871,6 @@ def main():
             ann = st.session_state.sel_ann
             if "GENE" in ann.columns: 
                 genes_string = ann["GENE"].dropna().unique().tolist()
-        
         st.info(f"Gènes disponibles : {len(genes_string)}")
         c1, c2 = st.columns(2); score_str = c1.selectbox("Score", [150, 400, 700, 900], index=1, key="string_score"); max_genes = c2.slider("Nb max", 5, 100, 30, key="string_max")
         if st.button("🕸️ Construire réseau STRING", type="primary", key="string_btn"):
