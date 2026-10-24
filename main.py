@@ -1528,12 +1528,23 @@ def main():
                         else: st.error("❌ Structure AlphaFold introuvable pour cette protéine.")
                     else: st.error("❌ Gène non trouvé dans UniProt pour ce taxon.")
 
-    # ═══════════════ ALIGNEMENT DE SÉQUENCES ═══════════════
+        # ═══════════════ ALIGNEMENT DE SÉQUENCES ═══════════════
     with tabs[12]:
         st.subheader("🧬 Alignement de Séquences (Rapide vs Lente)")
-        if st.session_state.get("pair_res_race") is not None or st.session_state.get("gwas_res") is not None:
-            if st.session_state.get("pair_res_race") is not None: snps_to_align = st.session_state.pair_res_race.head(5)
-            else: snps_to_align = st.session_state.gwas_res.head(5)
+        
+        # CORRECTION ICI : On vérifie aussi pair_res_group
+        has_race = st.session_state.get("pair_res_race") is not None
+        has_group = st.session_state.get("pair_res_group") is not None
+        has_gwas = st.session_state.get("gwas_res") is not None
+
+        if has_race or has_group or has_gwas:
+            # On choisit la source de SNPs selon ce qui a été fait
+            if has_group:
+                snps_to_align = st.session_state.pair_res_group.head(10)
+            elif has_race:
+                snps_to_align = st.session_state.pair_res_race.head(10)
+            else:
+                snps_to_align = st.session_state.gwas_res.head(10)
                 
             snp_to_choose = st.selectbox("Choisissez le SNP à visualiser :", snps_to_align["SNP"].tolist())
             
@@ -1547,13 +1558,14 @@ def main():
                     if seq_ref:
                         snp_pos = bp - start
                         seq_fast = list(seq_ref); seq_slow = list(seq_ref)
-                        alleles = ["A", "C", "G", "T"]; ref_base = seq_ref[snp_pos]; alt_base = "A" if ref_base != "A" else "G"
+                        ref_base = seq_ref[snp_pos]; alt_base = "A" if ref_base != "A" else "G"
                         seq_fast[snp_pos] = alt_base; seq_slow[snp_pos] = ref_base
                         alignment_html = align_and_highlight(seq_ref, "".join(seq_fast), "".join(seq_slow))
                         st.markdown(alignment_html, unsafe_allow_html=True)
                         st.info(f"💡 Le SNP **{snp_to_choose}** se situe au centre. Les bases en **rouge** indiquent une mutation.")
                     else: st.error("❌ Impossible de récupérer la séquence depuis Ensembl. Vérifiez le chromosome.")
-        else: st.warning("⚠️ Lancez d'abord un GWAS ou une analyse Groupe vs Groupe pour identifier des SNPs.")
+        else: 
+            st.warning("⚠️ Lancez d'abord un GWAS ou une analyse Groupe vs Groupe pour identifier des SNPs.")
 
     # ═══════════════ Export ═══════════════
     with tabs[13]:
